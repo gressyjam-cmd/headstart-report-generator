@@ -1,6 +1,3 @@
-from importlib.resources import path
-from pdb import run
-from pydoc import doc
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
@@ -28,8 +25,6 @@ def show_patient_frame():
     bind_mousewheel_to_patient()
 
 from docx.shared import Inches
-import tkinter as tk
-...
 
 IMAGE_MAP = {
     "right_plagio": "images/right_plagio.jpg",
@@ -57,7 +52,6 @@ patient_images = {
     "cephalohematoma": None,
     "dolichocephaly": None,
     "brachycephaly": None,
-    "cephalohematoma": None,
     "torticollis": None,
     "tots": None,
     "metopic_ridge": None,
@@ -1068,7 +1062,6 @@ tk.Checkbutton(
 # Images Tab
 ##=====================
 
-from docx.shared import Inches  # already present in your file
 
 def insert_image(doc, image_path, width_inches=3.0):
     """
@@ -1957,12 +1950,6 @@ finding_order = [
     "retained_primitive_reflexes",
 ]
 
-def delete_paragraph(paragraph):
-    p = paragraph._element
-    parent = p.getparent()
-    parent.remove(p)
-
-
 def insert_bullet_list_after_paragraph(paragraph, items):
     """
     Inserts each item as a bullet paragraph immediately after the placeholder paragraph.
@@ -2097,7 +2084,7 @@ def build_patient_overview(ctx):
 
     # --- Labor / pushing ---
     labor_text = hours_phrase(ctx.get("labor_length", ""), "labor")
-    pushing_text = hours_phrase(ctx.get("pushing", ""), "pushing")
+    pushing_text = hours_phrase(ctx.get("pushing_length", ""), "pushing")
 
     if labor_text and pushing_text:
         sentences.append(f"Labor included {labor_text} and {pushing_text}.")
@@ -2203,28 +2190,28 @@ def add_image_grid(doc, image_paths, cols=3, img_width_in=2.0):
     idx = 0
     for r in range(rows):
         for c in range(cols):
+            if idx >= len(paths):
+                break
             cell = table.rows[r].cells[c]
-            cell.width = Inches(cell_w)  # reliable sizing in Word [1](https://pytutorial.com/python-docx-paragraph-formatting-guide/)
+            cell.width = Inches(cell_w)
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
 
-            cp = cell.paragraphs[0]      # use existing paragraph [2](https://skelmis-docx.readthedocs.io/en/stable/user/styles-using.html)
+            cp = cell.paragraphs[0]
             cp.text = ""
             cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-        path = paths[idx]
-        run = cp.add_run()
-        run.add_picture(path, width=Inches(img_w))
+            path = paths[idx]
+            run = cp.add_run()
+            run.add_picture(path, width=Inches(img_w))
 
-        # --- Add description BELOW image ---
-        key_match = next((k for k, v in patient_images.items() if v == path), None)
+            key_match = next((k for k, v in patient_images.items() if v == path), None)
+            if key_match:
+                desc = patient_image_descriptions.get(key_match, "").strip()
+                if desc:
+                    desc_p = cell.add_paragraph(desc)
+                    desc_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-        if key_match:
-            desc = patient_image_descriptions.get(key_match, "").strip()
-            if desc:
-                desc_p = cell.add_paragraph(desc)
-                desc_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-        idx += 1
+            idx += 1
 
     doc.add_paragraph("")
 
@@ -2260,9 +2247,6 @@ def generate_report():
             ctx["birth_med"] = "medicated"
         else:
             ctx["birth_med"] = ""
-        ctx["formula_brand"] = formula_type.get()
-        ctx["previous_care_details"] = other_care_details.get()
-        ctx["breastfed_length"] = breastfeeding_duration_current.get()
         ctx["ivf_conception"] = ivf_conception.get()
         ctx["unmedicated"] = unmedicated.get()
         ctx["induced"] = induced.get()
@@ -2271,11 +2255,13 @@ def generate_report():
         ctx["weeks_at_birth"] = weeks_at_birth.get()
         ctx["ifm"] = ifm.get()
         ctx["labor_length"] = labor_length.get()
+        ctx["pushing"] = pushing.get()
         ctx["pushing_length"] = pushing.get()
         ctx["complications"] = complications.get()
         ctx["complications_text"] = complications_text.get()
         ctx["birth_weight"] = birth_weight.get()
         ctx["breastfed_length"] = breastfeeding_duration_current.get()
+        ctx["breastfeeding_duration_initial"] = breastfeeding_duration_initial.get()
 
         feeding_methods = []
 
@@ -2288,46 +2274,27 @@ def generate_report():
         if feeding_solid.get():
             feeding_methods.append("solid or pureed foods")
 
-        # Individual feeding placeholders, if your template ever uses them
         ctx["feeding_breast"] = "breastfeeding" if feeding_breast.get() else ""
         ctx["feeding_formula"] = "formula" if feeding_formula.get() else ""
         ctx["feeding_breast_bottle"] = "pumped breastmilk via bottle" if feeding_breast_bottle.get() else ""
         ctx["feeding_solid"] = "solid or pureed foods" if feeding_solid.get() else ""
-
-        # Combined feeding sentence placeholder
         ctx["current_feeding"] = ", ".join(feeding_methods)
-        
-        # Template-compatible aliases for patient overview
-        ctx["breastfeeding_duration_initial"] = breastfeeding_duration_initial.get()
+
         ctx["breast_complaint"] = breast_complaint.get()
         ctx["breastfed_complaint"] = breast_complaint.get()
         ctx["breastfed_complaints"] = breast_complaint.get()
-
         ctx["breast_digestive_issues"] = breast_digestive_issues.get()
         ctx["patient_digestive_complaints"] = breast_digestive_issues.get()
-
+        ctx["formula_use"] = formula_use.get()
         ctx["formula_brand"] = formula_type.get()
         ctx["formula_type"] = formula_type.get()
-
-        ctx["pushing"] = pushing.get()
-        ctx["pushing_length"] = pushing.get()
-
-        ctx["previous_care"] = previous_care.get()
-        ctx["other_care_details"] = other_care_details.get()
-
-        ctx["solids"] = solids.get()
-        ctx["solids_age"] = solids_age.get()
-
-        ctx["breastfed_complaints"] = breast_complaint.get()
-        ctx["patient_digestive_complaints"] = breast_digestive_issues.get()
-        ctx["formula_use"] = formula_use.get()
-        ctx["formula_type"] = formula_type.get()
         ctx["solids"] = solids.get()
         ctx["solids_age"] = solids_age.get()
         ctx["previous_care"] = previous_care.get()
+        ctx["previous_care_details"] = other_care_details.get()
         ctx["other_care_details"] = other_care_details.get()
 
-# Treatment plan and practitioner
+        # Treatment plan and practitioner
         ctx["treatment_plan"] = treatment_plan.get().strip()
 
         ctx["practitioner_prefix"] = practitioner_prefix.get().strip()
@@ -2346,7 +2313,7 @@ def generate_report():
 
         ctx["practitioner_notes"] = get_text_widget_content(Additional_Notes)
 
-# Recommendation text boxes
+        # Recommendation text boxes
         ctx["thrush_rec"] = get_text_widget_content(thrush_rec_box)        
         ctx["cradle_cap_rec"] = get_text_widget_content(cradle_cap_rec_box)
         ctx['cephalohematoma_rec'] = get_text_widget_content(cephalohematoma_rec_box)
