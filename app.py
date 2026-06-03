@@ -1,16 +1,69 @@
+﻿import os
+import json
+import datetime
+import re
+import threading
+import tempfile
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+from tkinter import filedialog
 from tkinterdnd2 import TkinterDnD
 from docx import Document
 from docx.oxml.ns import qn
 from docx.shared import Pt
 from PIL import Image, ImageTk
-import datetime
-import os
-import re
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
+
+# Always resolve file paths relative to this script's folder.
+# sys._MEIPASS is set by PyInstaller when running as a bundled .exe —
+# if it's not set, we're running normally from the source folder.
+import sys
+if getattr(sys, "frozen", False):
+    BASE_DIR = sys._MEIPASS
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Maximum pixel dimension for images embedded in the report.
+# Phone photos are often 3000–6000px wide; shrinking them to 1500px
+# dramatically reduces file size and generation time with no visible loss.
+MAX_IMAGE_PX = 1500
+
+def compress_image_for_report(src_path):
+    """
+    Return a path to a compressed copy of the image suitable for embedding.
+    If the image is already small enough, returns the original path unchanged.
+    The compressed copy is written to a temp file and cleaned up automatically
+    when the program closes.
+    """
+    try:
+        img = Image.open(src_path)
+        # Convert to RGB so JPEG compression works on any mode (RGBA, palette, etc.)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        w, h = img.size
+        if max(w, h) <= MAX_IMAGE_PX:
+            return src_path  # already small enough — use as-is
+        # Resize, preserving aspect ratio
+        img.thumbnail((MAX_IMAGE_PX, MAX_IMAGE_PX), Image.LANCZOS)
+        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        img.save(tmp.name, "JPEG", quality=85, optimize=True)
+        tmp.close()
+        return tmp.name
+    except Exception:
+        return src_path  # fall back to original if anything goes wrong
+
+def _compress_paths(paths):
+    """Compress a list of image paths, skipping None / missing entries."""
+    return [compress_image_for_report(p) if p and os.path.exists(p) else p
+            for p in paths]
+
+def _set_img(var_name, value):
+    """Safely set an image BooleanVar by name — does nothing if not defined yet."""
+    var = globals().get(var_name)
+    if isinstance(var, tk.BooleanVar):
+        var.set(value)
 
 # practitioner mode
 def show_practitioner_frame():
@@ -27,17 +80,34 @@ def show_patient_frame():
 from docx.shared import Inches
 
 IMAGE_MAP = {
-    "right_plagio": "images/right_plagio.jpg",
-    "left_plagio": "images/left_plagio.jpg",
-    "temporal_rotation": "images/temporal_rotation.jpg",
-    "supernumerary_bones_1": "images/PSCB_1.jpg",
-    "supernumerary_bones_2": "images/PSCB_2.jpg",
-    "parietal_bone": "images/parietal_bone.jpg",
-    "sagittal_suture": "images/sagittal_suture.jpg",
-    "normal_lip_frenulum": "images/normal_lip_frenulum.jpg",
-    "normal_tongue_frenulum": "images/normal_tongue_frenulum.jpg",
-    "normal_tongue_frenulum_1": "images/normal_tongue_frenulum_1.jpg",
-    "normal_tongue_frenulum_2": "images/normal_tongue_frenulum_2.jpg",
+    "right_plagio":           os.path.join(BASE_DIR, "images", "right_plagio.jpg"),
+    "left_plagio":            os.path.join(BASE_DIR, "images", "left_plagio.jpg"),
+    "temporal_rotation":      os.path.join(BASE_DIR, "images", "temporal_rotation.jpg"),
+    "supernumerary_bones_1":  os.path.join(BASE_DIR, "images", "PSCB_1.jpg"),
+    "supernumerary_bones_2":  os.path.join(BASE_DIR, "images", "PSCB_2.jpg"),
+    "parietal_bone":          os.path.join(BASE_DIR, "images", "parietal_bone.jpg"),
+    "sagittal_suture":        os.path.join(BASE_DIR, "images", "sagittal_suture.jpg"),
+    "normal_lip_frenulum":    os.path.join(BASE_DIR, "images", "normal_lip_frenulum.jpg"),
+    "normal_tongue_frenulum": os.path.join(BASE_DIR, "images", "normal_tongue_frenulum.jpg"),
+    "normal_tongue_frenulum_1": os.path.join(BASE_DIR, "images", "normal_tongue_frenulum_1.jpg"),
+    "normal_tongue_frenulum_2": os.path.join(BASE_DIR, "images", "normal_tongue_frenulum_2.jpg"),
+    "eop":                    os.path.join(BASE_DIR, "images", "EOP.jpg"),
+}
+
+# Display titles for each reference image (shown as a caption in the report)
+IMAGE_TITLES = {
+    "right_plagio":           "Plagiocephaly with Right Lateral Strain",
+    "left_plagio":            "Plagiocephaly with Left Lateral Strain",
+    "temporal_rotation":      "Temporal Bone",
+    "supernumerary_bones_1":  "Potential Supernumerary Cranial Bones Example 1",
+    "supernumerary_bones_2":  "Potential Supernumerary Cranial Bones Example 2",
+    "parietal_bone":          "Parietal Bone",
+    "sagittal_suture":        "Sagittal Suture",
+    "normal_lip_frenulum":    "Normal Lip Frenulum",
+    "normal_tongue_frenulum": "Normal Tongue Frenulum",
+    "normal_tongue_frenulum_1": "Normal Tongue Frenulum Example 1",
+    "normal_tongue_frenulum_2": "Normal Tongue Frenulum Example 2",
+    "eop":                    "External Occipital Protuberance (EOP)",
 }
 
 # Stores patient-specific image paths
@@ -93,26 +163,9 @@ form_frame.bind("<Configure>", lambda e: canvas_p.configure(scrollregion=canvas_
 # Practitioner Frame
 frame_practitioner = tk.Frame(root)
 
-canvas_pr = tk.Canvas(frame_practitioner)
-canvas_pr.pack(side="left", fill="both", expand=True)
-
-scroll_pr = ttk.Scrollbar(frame_practitioner, orient="vertical", command=canvas_pr.yview)
-scroll_pr.pack(side="right", fill="y")
-
-canvas_pr.configure(yscrollcommand=scroll_pr.set)
-canvas_pr.bind("<Configure>", lambda e: canvas_pr.configure(scrollregion=canvas_pr.bbox("all")))
-
-practitioner_form = tk.Frame(canvas_pr)
-practitioner_window = canvas_pr.create_window((0, 0), window=practitioner_form, anchor="nw")
-
-def resize_practitioner(event):
-    canvas_pr.itemconfig(practitioner_window, width=event.width)
-
-canvas_pr.bind("<Configure>", resize_practitioner)
-
-# Practitioner tabs
-notebook = ttk.Notebook(practitioner_form)
-notebook.pack(fill="both", expand=True, padx=20, pady=20)
+# Notebook fills the frame directly — no outer canvas needed
+notebook = ttk.Notebook(frame_practitioner)
+notebook.pack(fill="both", expand=True, padx=10, pady=(10, 0))
 
 # Tab Frames
 tab_cranial = tk.Frame(notebook)
@@ -122,10 +175,8 @@ tab_recommend = tk.Frame(notebook)
 tab_images = tk.Frame(notebook)
 tab_practitioner = tk.Frame(notebook)
 
-
-for tab in (tab_cranial, tab_oral_neck, tab_other, tab_recommend, tab_practitioner):
+for tab in (tab_cranial, tab_oral_neck, tab_other, tab_recommend, tab_images, tab_practitioner):
     tab.pack(fill="both", expand=True)
-
 
 #add tabs to notebook
 notebook.add(tab_cranial, text="Cranial Findings")
@@ -134,6 +185,9 @@ notebook.add(tab_other, text="Other Findings")
 notebook.add(tab_recommend, text="Recommendations")
 notebook.add(tab_images, text="Images")
 notebook.add(tab_practitioner, text="Practitioner Notes")
+
+# Maps each tab to its inner scrollable canvas (populated after make_scrollable calls below)
+tab_canvas_map = {}
 
 def bind_mousewheel_recursive(widget, callback):
     widget.bind("<MouseWheel>", callback)
@@ -178,7 +232,7 @@ def make_scrollable(parent, margin=20):
     canvas.bind("<MouseWheel>", _on_mousewheel)
 
 
-    return inner
+    return inner, canvas
 
 EMU_PER_INCH = 914400
 
@@ -190,6 +244,17 @@ def usable_width_inches(doc):
 def delete_paragraph(paragraph):
     p = paragraph._element
     p.getparent().remove(p)
+
+def prevent_row_split(row):
+    """
+    Prevent a table row from splitting across a page break.
+    Keeps images and their captions together on the same page.
+    """
+    from docx.oxml import OxmlElement
+    tr = row._tr
+    trPr = tr.get_or_add_trPr()
+    cantSplit = OxmlElement('w:cantSplit')
+    trPr.append(cantSplit)
 
 def replace_placeholder_with_image_row(doc, placeholder, image_paths, max_cols=5):
     """
@@ -241,12 +306,21 @@ def replace_placeholder_with_image_row(doc, placeholder, image_paths, max_cols=5
 
 
 
-cranial_frame = make_scrollable(tab_cranial)
-oral_neck_frame = make_scrollable(tab_oral_neck)
-other_frame = make_scrollable(tab_other)
-recommend_frame = make_scrollable(tab_recommend)
-practitioner_frame = make_scrollable(tab_practitioner)
-images_frame = make_scrollable(tab_images)
+cranial_frame, cranial_canvas = make_scrollable(tab_cranial)
+oral_neck_frame, oral_neck_canvas = make_scrollable(tab_oral_neck)
+other_frame, other_canvas = make_scrollable(tab_other)
+recommend_frame, recommend_canvas = make_scrollable(tab_recommend)
+practitioner_frame, practitioner_canvas = make_scrollable(tab_practitioner)
+images_frame, images_canvas = make_scrollable(tab_images)
+
+tab_canvas_map.update({
+    str(tab_cranial): cranial_canvas,
+    str(tab_oral_neck): oral_neck_canvas,
+    str(tab_other): other_canvas,
+    str(tab_recommend): recommend_canvas,
+    str(tab_images): images_canvas,
+    str(tab_practitioner): practitioner_canvas,
+})
 
 
 ##=====================
@@ -452,6 +526,10 @@ def toggle_cephalohematoma_fields():
     cephalohematoma_calcium_dropdown.config(state=state)
     cephalohematoma_calcium_location_entry.config(state=state)
 
+    # Auto-select reference diagrams
+    _set_img("img_parietal_bone", cephalohematoma.get())
+    _set_img("img_sagittal_suture", cephalohematoma.get())
+
     cephalohematoma_rec_box.config(state="normal")
     cephalohematoma_rec_box.delete("1.0", "end")
 
@@ -560,11 +638,22 @@ toggle_brachycephaly_fields()
 # Plagiocephaly (Toggle Group)
 # -----------------------------
 
+def update_plagio_image(*_):
+    """Select the correct plagiocephaly diagram based on laterality, or clear both."""
+    if not plagiocephaly.get():
+        _set_img("img_right_plagio", False)
+        _set_img("img_left_plagio", False)
+        return
+    lat = plagiocephaly_laterality.get()
+    _set_img("img_right_plagio", lat == "Right")
+    _set_img("img_left_plagio", lat == "Left")
+
 def toggle_plagiocephaly_fields():
     state = "normal" if plagiocephaly.get() else "disabled"
     plagiocephaly_severity_dropdown.config(state=state)
     plagiocephaly_measurement_entry.config(state=state)
     plagiocephaly_laterality_dropdown.config(state=state)
+    update_plagio_image()
 
 plagiocephaly = tk.BooleanVar()
 tk.Checkbutton(
@@ -603,6 +692,7 @@ plagiocephaly_laterality_dropdown = ttk.Combobox(
 )
 plagiocephaly_laterality_dropdown.pack(anchor="w", padx=30, pady=10)
 plagiocephaly_laterality_dropdown.current(0)
+plagiocephaly_laterality_dropdown.bind("<<ComboboxSelected>>", update_plagio_image)
 
 # Disable initially
 toggle_plagiocephaly_fields()
@@ -693,11 +783,16 @@ tk.Checkbutton(
 # supernumerary cranial bones
 # -----------------------------
 
+def toggle_supernumerary_bones():
+    _set_img("img_pscb_1", supernumerary_bones.get())
+    _set_img("img_pscb_2", supernumerary_bones.get())
+
 supernumerary_bones = tk.BooleanVar()
 tk.Checkbutton(
     cranial_frame,
     text="Supernumerary Cranial Bones",
-    variable=supernumerary_bones
+    variable=supernumerary_bones,
+    command=toggle_supernumerary_bones
 ).pack(anchor="w", padx=10, pady=(20,0))
 
 # -----------------------------
@@ -719,6 +814,9 @@ def toggle_temporal_alignment_fields():
     state = "normal" if temporal_alignment.get() else "disabled"
     temporal_ear_flare_laterality_dropdown.config(state=state)
     temporal_alignment_outcome_entry.config(state=state)
+
+    # Auto-select reference diagram
+    _set_img("img_temporal_rotation", temporal_alignment.get())
 
 temporal_alignment = tk.BooleanVar()
 tk.Checkbutton(
@@ -795,6 +893,11 @@ def toggle_tethered_oral_tissues_fields():
         tots_docs_rec_box.config(state="normal")
         tots_docs_rec_box.delete("1.0", "end")
         tots_docs_rec_box.config(state="disabled")
+
+    # Auto-select reference diagrams
+    _set_img("img_normal_lip_frenulum", tethered_oral_tissues.get())
+    _set_img("img_normal_tongue_frenulum_1", tethered_oral_tissues.get())
+    _set_img("img_normal_tongue_frenulum_2", tethered_oral_tissues.get())
 
 
 tethered_oral_tissues = tk.BooleanVar()
@@ -884,9 +987,14 @@ def toggle_thrush_fields():
     if thrush.get():
         thrush_rec_box.insert(
             "1.0",
-            "Borax 30c twice daily; SFI Lacto Prime or Baby Probiotic; "
-            "Ther-biotic Complete for mom; reduce sugar/simple carbs; "
-            "colloidal silver on nipples; Silverette nipple shields."
+            "Lacto Prime or Baby Formula Probiotic by SFI\n"
+            "Anovite Colostrum for baby — start with 1/2 tsp daily, increase to 1 Tbsp daily\n"
+            "Appointment with Stephanie Kononovich https://foundationhomeopathy.com\n"
+            "Ther-biotic Complete (1/4 tsp) for mom twice daily (if breastfeeding)\n"
+            "Mom eliminate sugar and simple carbs (if breastfeeding)\n"
+            "Colloidal Silver (Argentyn 23) sprayed on nipples before and after nursing (if breastfeeding)\n"
+            "Keep nipples aired out — moist and dark make yeast grow (if breastfeeding)\n"
+            "Silverette Nipple Shields (if breastfeeding)"
         )
     else:
         thrush_rec_box.config(state="disabled")
@@ -914,8 +1022,9 @@ def toggle_cradle_cap_fields():
     if cradle_cap.get():
         cradle_cap_rec_box.insert(
             "1.0",
-            "Calc Sulph 6x 3x/day; SFI Lacto Prima or Baby Probiotic; "
-            "massage coconut/olive oil into scalp (do not scrub)."
+            "Calc Sulph 6x 3x/day\n"
+            "Lacto Prima or Baby Formula Probiotic by SFI\n"
+            "Argentyn 23 silver gel or spray on area 3x/day, then massage coconut or olive oil into scalp (do not scrub)"
         )
     else:
         cradle_cap_rec_box.config(state="disabled")
@@ -945,7 +1054,11 @@ def toggle_blocked_tear_duct_fields():
     blocked_tear_duct_rec_box.delete("1.0", "end")
 
     if blocked_tear_duct.get():
-        blocked_tear_duct_rec_box.insert("1.0", "Silicea 6x 2–3x daily.")
+        blocked_tear_duct_rec_box.insert(
+            "1.0",
+            "Silicea 6x 2–3x daily\n"
+            "Argentyn 23 silver (spray or drops) in the eye 2x daily"
+        )
     else:
         blocked_tear_duct_rec_box.config(state="disabled")
 
@@ -1057,6 +1170,17 @@ tk.Checkbutton(
     variable=inappropriate_reflexes
 ).pack(anchor="w", padx=10, pady=(20,0))
 
+# -----------------------------
+# Skeletal Alignment
+# -----------------------------
+
+skeletal_alignment = tk.BooleanVar()
+tk.Checkbutton(
+    other_frame,
+    text="Skeletal Alignment Findings",
+    variable=skeletal_alignment
+).pack(anchor="w", padx=10, pady=(20,0))
+
 
 ##=====================
 # Images Tab
@@ -1083,9 +1207,9 @@ img_pscb_2 = tk.BooleanVar()
 img_parietal_bone = tk.BooleanVar()
 img_sagittal_suture = tk.BooleanVar()
 img_normal_lip_frenulum = tk.BooleanVar()
-img_normal_tongue_frenulum = tk.BooleanVar()
 img_normal_tongue_frenulum_1 = tk.BooleanVar()
 img_normal_tongue_frenulum_2 = tk.BooleanVar()
+img_eop = tk.BooleanVar()
 
 tk.Label(images_frame, text="Clinic Reference Images", font=("Arial", 14, "bold")).pack(anchor="w", padx=20, pady=(10,5))
 
@@ -1097,9 +1221,9 @@ tk.Checkbutton(images_frame, text="Supernumerary Cranial Bones (PSCB 2)", variab
 tk.Checkbutton(images_frame, text="Parietal Bone (Cephalohematoma)", variable=img_parietal_bone).pack(anchor="w", padx=40)
 tk.Checkbutton(images_frame, text="Sagittal Suture (Cephalohematoma)", variable=img_sagittal_suture).pack(anchor="w", padx=40)
 tk.Checkbutton(images_frame, text="Normal Lip Frenulum", variable=img_normal_lip_frenulum).pack(anchor="w", padx=40)
-tk.Checkbutton(images_frame, text="Normal Tongue Frenulum", variable=img_normal_tongue_frenulum).pack(anchor="w", padx=40)
-tk.Checkbutton(images_frame, text="Normal Tongue Frenulum (Alt 1)", variable=img_normal_tongue_frenulum_1).pack(anchor="w", padx=40)
-tk.Checkbutton(images_frame, text="Normal Tongue Frenulum (Alt 2)", variable=img_normal_tongue_frenulum_2).pack(anchor="w", padx=40)
+tk.Checkbutton(images_frame, text="Normal Tongue Frenulum (Example 1)", variable=img_normal_tongue_frenulum_1).pack(anchor="w", padx=40)
+tk.Checkbutton(images_frame, text="Normal Tongue Frenulum (Example 2)", variable=img_normal_tongue_frenulum_2).pack(anchor="w", padx=40)
+tk.Checkbutton(images_frame, text="External Occipital Protuberance (EOP)", variable=img_eop).pack(anchor="w", padx=40)
 
 tk.Label(images_frame, text="Patient Images", font=("Arial", 14, "bold")).pack(anchor="w", padx=20, pady=(20,5))
 
@@ -1142,17 +1266,18 @@ def create_drop_zone(parent, label_text, key):
     label.drop_target_register("DND_Files")
 
     def drop_handler(event):
-        path = event.data.strip("{}")
+        path = event.data.strip().strip("{}")
         patient_images[key] = path
 
         # Update label
-        label.config(text=f"Loaded: {path.split('/')[-1]}")
+        label.config(text=f"Loaded: {os.path.basename(path)}")
 
-        # Load thumbnail
+        # Load a small thumbnail — just enough to confirm the right image was dropped
         try:
             img = Image.open(path)
-            img.thumbnail((200, 200))
+            img.thumbnail((100, 100))
             tk_img = ImageTk.PhotoImage(img)
+            img.close()
 
             preview_label.image = tk_img
             preview_label.config(image=tk_img)
@@ -1247,25 +1372,24 @@ practitioner_suffix = tk.StringVar()
 tk.Entry(practitioner_frame, textvariable=practitioner_suffix, width=40).pack(anchor="w", padx=20)
 
 
-practitioner_form.bind(
-    "<Configure>",
-    lambda e: canvas_pr.configure(scrollregion=canvas_pr.bbox("all")))
-
-#enable mousewheel scrolling
 def _on_mousewheel_p(event):
     canvas_p.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-
-def _on_mousewheel_pr(event):
-    canvas_pr.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
 def bind_mousewheel_to_patient():
     root.unbind_all("<MouseWheel>")
-    root.bind_all("<MouseWheel>", _on_mousewheel_p)
+    canvas_p.bind("<MouseWheel>", _on_mousewheel_p)
+    bind_mousewheel_recursive(form_frame, _on_mousewheel_p)
+
+def _bind_active_tab_scroll(*_):
+    canvas = tab_canvas_map.get(notebook.select())
+    if canvas:
+        root.unbind_all("<MouseWheel>")
+        root.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
 def bind_mousewheel_to_practitioner():
-    root.unbind_all("<MouseWheel>")
-    root.bind_all("<MouseWheel>", _on_mousewheel_pr)
+    _bind_active_tab_scroll()
+
+notebook.bind("<<NotebookTabChanged>>", _bind_active_tab_scroll)
 
 
 # Patient First Name
@@ -1416,12 +1540,10 @@ tk.Entry(form_frame, textvariable=main_complaint, width=40).pack(anchor="w", pad
 tk.Label(form_frame, text="Current Feeding Method(s):", font=("Arial", 12)).pack(anchor="w", padx=20, pady=(20, 0))
 
 feeding_breast = tk.BooleanVar()
-feeding_formula = tk.BooleanVar()
 feeding_breast_bottle = tk.BooleanVar()
 feeding_solid = tk.BooleanVar()
 
 tk.Checkbutton(form_frame, text="Breastfeeding", variable=feeding_breast).pack(anchor="w", padx=40)
-tk.Checkbutton(form_frame, text="Formula", variable=feeding_formula).pack(anchor="w", padx=40)
 tk.Checkbutton(form_frame, text="Pumped Breastmilk via bottle", variable=feeding_breast_bottle).pack(anchor="w", padx=40)
 tk.Checkbutton(form_frame, text="Solid or pureed foods", variable=feeding_solid).pack(anchor="w", padx=40)
 
@@ -1441,9 +1563,9 @@ breast_digestive_issues = tk.StringVar()
 tk.Entry(form_frame, textvariable=breast_digestive_issues, width=40).pack(anchor="w", padx=20)
 
 # Formula Use
-tk.Label(form_frame, text="Are you currently feeding with formula?", font=("Arial", 12)).pack(anchor="w", padx=20, pady=(20, 0))
+tk.Label(form_frame, text="Formula feeding:", font=("Arial", 12)).pack(anchor="w", padx=20, pady=(20, 0))
 formula_use = tk.StringVar()
-formula_use_dropdown = ttk.Combobox(form_frame, textvariable=formula_use, values=["Choose An Option", "Yes", "No (Skip the next 2 questions)", "Supplemental only"], width=37)
+formula_use_dropdown = ttk.Combobox(form_frame, textvariable=formula_use, values=["None", "Primary feeding method", "Supplemental only"], width=37)
 formula_use_dropdown.pack(anchor="w", padx=20)
 formula_use_dropdown.current(0)
 
@@ -1509,7 +1631,6 @@ def submit_data():
     print("Initial Breastfeeding Duration:", breastfeeding_duration_initial.get())
     print("Current Breastfeeding Duration:", breastfeeding_duration_current.get())
     print("Feeding Method - Breastfeeding:", feeding_breast.get())
-    print("Feeding Method - Formula:", feeding_formula.get())
     print("Feeding Method - Breastmilk Bottle:", feeding_breast_bottle.get())
     print("Feeding Method - Solids:", feeding_solid.get())
     print("Formula Use:", formula_use.get())
@@ -1594,16 +1715,203 @@ patient_bottom = tk.Frame(form_frame)
 patient_bottom.pack(fill="x", pady=30)
 
 tk.Button(patient_bottom, text="Submit Patient Info", command=submit_data).pack()
-tk.Button(patient_bottom, text="Practitioner Mode", command=show_practitioner_frame).pack(pady=10)  
+tk.Button(patient_bottom, text="Practitioner Mode", command=show_practitioner_frame).pack(pady=10)
+tk.Button(patient_bottom, text="Save Progress", command=lambda: save_progress(), bg="#2196F3", fg="white").pack(pady=2)
+tk.Button(patient_bottom, text="Load Saved Progress", command=lambda: load_progress(), bg="#2196F3", fg="white").pack(pady=2)  
 
-# --- Bottom Submit Area for Practitioner Page ---
-practitioner_bottom = tk.Frame(practitioner_form)
-practitioner_bottom.pack(fill="x", pady=30)
+# --- Bottom bar for Practitioner Page (fixed, always visible) ---
+practitioner_bottom = tk.Frame(frame_practitioner)
+practitioner_bottom.pack(fill="x", pady=5)
 
 tk.Button(practitioner_bottom, text="Submit All Data", command=submit_data).pack()
-tk.Button(practitioner_bottom, text="Back to Patient Mode", command=show_patient_frame).pack(pady=10)
+tk.Button(practitioner_bottom, text="Back to Patient Mode", command=show_patient_frame).pack(pady=5)
+tk.Button(practitioner_bottom, text="Save Progress", command=lambda: save_progress(), bg="#2196F3", fg="white").pack(pady=2)
+tk.Button(practitioner_bottom, text="Load Saved Progress", command=lambda: load_progress(), bg="#2196F3", fg="white").pack(pady=2)
 
 
+
+
+# &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+# ---------- Save / Load Progress --------------------------
+# &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+
+# All StringVar names in the form
+_STRING_VAR_NAMES = [
+    "date_of_service",
+    "patient_first_name", "patient_last_name", "patient_dob", "patient_gender",
+    "ivf_conception", "unmedicated", "induced", "epidural", "birth_mode", "weeks_at_birth",
+    "ifm", "labor_length", "pushing", "complications", "complications_text",
+    "birth_weight", "breastfeeding_duration_initial", "breastfeeding_duration_current",
+    "main_complaint", "breast_complaint", "breast_digestive_issues",
+    "formula_use", "formula_type", "digestive_issues", "solids", "solids_age",
+    "previous_care", "other_care_details", "treatment_plan",
+    "practitioner_prefix", "practitioner_first_name", "practitioner_last_name", "practitioner_suffix",
+    "cephalohematoma_measurement", "cephalohematoma_location",
+    "cephalohematoma_cross_suture", "cephalohematoma_calcium", "cephalohematoma_calcium_location",
+    "brachycephaly_severity", "brachycephaly_measurement",
+    "plagiocephaly_severity", "plagiocephaly_measurement", "plagiocephaly_laterality",
+    "dolichocephaly_severity", "dolichocephaly_measurement",
+    "torticollis_laterality", "blocked_tear_duct_laterality",
+    "acetabular_click_laterality", "femur_rotation_laterality", "femur_rotation_restriction",
+    "temporal_ear_flare_laterality", "temporal_alignment_outcome",
+]
+
+# All BooleanVar names in the form
+_BOOL_VAR_NAMES = [
+    "cephalohematoma", "brachycephaly", "plagiocephaly", "dolichocephaly",
+    "facial_asymmetry", "occipital_extension", "sutural_restriction", "metopic_ridge", "supernumerary_bones",
+    "frontal_alignment", "temporal_alignment",
+    "torticollis", "tethered_oral_tissues", "internal_maxilla_rotation",
+    "retrognathia", "prognathia",
+    "thrush", "cradle_cap", "blocked_tear_duct", "acetabular_click",
+    "femur_rotation", "inappropriate_reflexes", "skeletal_alignment",
+    "homeo_rec", "homeo_cons_rec", "primitive_reflex_rec",
+    "feeding_breast", "feeding_breast_bottle", "feeding_solid",
+    "img_right_plagio", "img_left_plagio", "img_temporal_rotation",
+    "img_pscb_1", "img_pscb_2", "img_parietal_bone", "img_sagittal_suture",
+    "img_normal_lip_frenulum",
+    "img_normal_tongue_frenulum_1", "img_normal_tongue_frenulum_2", "img_eop",
+]
+
+def _get_text_widget_map():
+    return {
+        "Additional_Notes": Additional_Notes,
+        "thrush_rec_box": thrush_rec_box,
+        "cradle_cap_rec_box": cradle_cap_rec_box,
+        "cephalohematoma_rec_box": cephalohematoma_rec_box,
+        "blocked_tear_duct_rec_box": blocked_tear_duct_rec_box,
+        "jaw_ex_box": jaw_ex_box,
+        "homeo_rec_box": homeo_rec_box,
+        "homeo_cons_rec_box": homeo_cons_rec_box,
+        "primitive_reflex_rec_box": primitive_reflex_rec_box,
+        "tots_docs_rec_box": tots_docs_rec_box,
+        "primitive_reflexes_findings": primitive_reflexes_findings,
+    }
+
+def _run_all_toggles():
+    """Re-run every toggle function so dependent fields reflect current checkbox state."""
+    toggle_cephalohematoma_fields()
+    toggle_brachycephaly_fields()
+    toggle_plagiocephaly_fields()
+    update_plagio_image()
+    toggle_supernumerary_bones()
+    toggle_dolichocephaly_fields()
+    toggle_temporal_alignment_fields()
+    toggle_torticollis_fields()
+    toggle_tethered_oral_tissues_fields()
+    update_jaw_exercises()
+    toggle_thrush_fields()
+    toggle_cradle_cap_fields()
+    toggle_blocked_tear_duct_fields()
+    toggle_acetabular_click_fields()
+    toggle_femur_rotation_fields()
+    toggle_homeopathy()
+    toggle_homeo_consult()
+    toggle_primitive_reflex()
+    update_pronouns()
+
+def save_progress():
+    filepath = filedialog.asksaveasfilename(
+        defaultextension=".json",
+        filetypes=[("Report Save File", "*.json"), ("All Files", "*.*")],
+        title="Save Progress",
+        initialfile="report_in_progress",
+    )
+    if not filepath:
+        return
+
+    data = {}
+
+    # StringVars
+    data["string_vars"] = {}
+    for name in _STRING_VAR_NAMES:
+        var = globals().get(name)
+        if isinstance(var, tk.StringVar):
+            data["string_vars"][name] = var.get()
+
+    # BooleanVars
+    data["bool_vars"] = {}
+    for name in _BOOL_VAR_NAMES:
+        var = globals().get(name)
+        if isinstance(var, tk.BooleanVar):
+            data["bool_vars"][name] = var.get()
+
+    # Text widgets (temporarily enable to read, then restore state)
+    data["text_widgets"] = {}
+    for name, widget in _get_text_widget_map().items():
+        try:
+            original_state = widget.cget("state")
+            widget.config(state="normal")
+            data["text_widgets"][name] = widget.get("1.0", "end-1c")
+            widget.config(state=original_state)
+        except Exception:
+            data["text_widgets"][name] = ""
+
+    # Patient image paths and descriptions
+    data["patient_images"] = {k: v for k, v in patient_images.items()}
+    data["patient_image_descriptions"] = dict(patient_image_descriptions)
+
+    try:
+        with open(filepath, "w") as f:
+            json.dump(data, f, indent=2)
+        messagebox.showinfo("Saved", f"Progress saved to:\n{filepath}")
+    except Exception as e:
+        messagebox.showerror("Save Error", str(e))
+
+
+def load_progress():
+    filepath = filedialog.askopenfilename(
+        filetypes=[("Report Save File", "*.json"), ("All Files", "*.*")],
+        title="Load Saved Progress",
+    )
+    if not filepath:
+        return
+
+    try:
+        with open(filepath, "r") as f:
+            data = json.load(f)
+    except Exception as e:
+        messagebox.showerror("Load Error", f"Could not read file:\n{e}")
+        return
+
+    # 1. Restore StringVars
+    for name, value in data.get("string_vars", {}).items():
+        var = globals().get(name)
+        if isinstance(var, tk.StringVar):
+            var.set(value)
+
+    # 2. Restore BooleanVars
+    for name, value in data.get("bool_vars", {}).items():
+        var = globals().get(name)
+        if isinstance(var, tk.BooleanVar):
+            var.set(value)
+
+    # 3. Run all toggles — this sets the correct enabled/disabled state on every
+    #    dependent field, and auto-fills recommendation boxes with their defaults.
+    _run_all_toggles()
+
+    # 4. Overwrite recommendation boxes with the actual saved text.
+    #    We temporarily enable each widget to write to it, then restore its state.
+    for name, content in data.get("text_widgets", {}).items():
+        widget = _get_text_widget_map().get(name)
+        if widget is None:
+            continue
+        current_state = widget.cget("state")
+        widget.config(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", content)
+        widget.config(state=current_state)
+
+    # 5. Restore patient image paths and descriptions
+    patient_images.update(data.get("patient_images", {}))
+    patient_image_descriptions.update(data.get("patient_image_descriptions", {}))
+
+    messagebox.showinfo(
+        "Loaded",
+        "Progress loaded successfully.\n\n"
+        "Note: image thumbnails will not re-display, but any saved image paths "
+        "will still be included when you generate the report."
+    )
 
 
 # &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
@@ -1755,103 +2063,111 @@ def build_pronouns(gender_value):
             "pronoun_poss_cap": "Their",
         }
 
-# Objective finding templates (edit as needed)
+# Objective finding templates
 finding_templates = {
 "cephalohematoma": lambda ctx: (
     f"Cephalohematoma – {ctx['patient_name']}'s cephalohematoma measured "
-    f"{ctx.get('cephalohematoma_measurement','___')} and was located at "
-    f"{ctx.get('cephalohematoma_location','___')}. "
+    f"{ctx.get('cephalohematoma_measurement','___')} and was located {ctx.get('cephalohematoma_location','___')}. "
     f"{'It crossed the sutural lines' if is_yes(ctx.get('cephalohematoma_cross_suture','')) else 'It did not cross the sutural lines'} "
     f"and has calcium deposits {ctx.get('cephalohematoma_calcium_location','___')}. "
-    f"A cephalohematoma is often due to birth trauma such as prolonged transition or repeated descent. "
-    f"These swellings often resolve within days, but delayed resolution indicates inefficient CSF routing. "
-    f"Cranial treatments combined with homeopathy often give excellent results. "
-    f"Stagnation in the sagittal sinus along the motor homunculus can contribute to seizures, which cranial work can resolve. "
-    f"Occasionally, bits of blood appear in the urine as the CH resolves. Homeopathic remedies help resolve calcium deposition."
+    f"A cephalohematoma is often due to birth trauma like being stuck in transition too long or the baby's head moving in and out repeatedly during transition. "
+    f"These swellings often resolve within days after birth, but when they take longer to resolve, there is an issue with efficiently routing the fluid through the cranial ventricular system. "
+    f"Cranial treatments combined with homeopathy often give a wonderful result. "
+    f"When fluid stagnates in the sagittal sinus along the motor homunculus, seizures can ensue — this can be resolved with cranial technique. "
+    f"Occasionally, during resolution of the cephalohematoma, there will be bits of blood in the urine as the fluid is flushed out. "
+    f"The homeopathic remedies help resolve calcium depositions."
     ),
 "post_cephalohematoma_calcium_deposition": lambda ctx: (
     f"Post Cephalohematoma Calcium Deposition – {ctx['patient_name']}'s cephalohematoma had resolved at the time of "
     f"{ctx['pronoun_poss']} exam, but calcium deposits are palpable along the previous CH edges. "
-    f"A cephalohematoma is often due to birth trauma such as prolonged transition or repeated descent. "
-    f"These swellings often resolve within days, but delayed resolution indicates inefficient CSF routing. "
-    f"Cranial treatments combined with homeopathy often give excellent results. "
-    f"Stagnation in the sagittal sinus along the motor homunculus can contribute to seizures. "
-    f"It is important to treat after EXTERNAL resolution to ensure INTERNAL CSF flow is restored. "
-    f"Homeopathic remedies help safely resolve calcium deposition."
+    f"A cephalohematoma (CH) is often due to birth trauma like being stuck in transition too long or the baby's head moving in and out repeatedly during transition. "
+    f"These swellings often resolve within days after birth, but when they take longer to resolve, there is an issue with efficient routing of the Cerebrospinal Fluid (CSF) through the cranial ventricular system. "
+    f"Cranial treatments combined with homeopathy often give a wonderful result. "
+    f"When CSF stagnates in the sagittal sinus along the motor homunculus, seizures can ensue. "
+    f"It is important to have cranial treatment after the EXTERNAL resolution of the CH to make sure the CSF is moving efficiently INTERNALLY throughout the brain sinuses and ventricles. "
+    f"The homeopathic remedies help to safely resolve calcium depositions."
     ),
 "brachycephaly": lambda ctx: (
     f"Brachycephaly – {ctx['patient_name']} presents with a {ctx.get('brachycephaly_severity','___')} "
-    f"non-synostotic brachycephaly. Non-synostotic means no sutural fusion or aplasia—"
-    f"the patient is not a surgical candidate. Brachycephaly means the back of the head is flat and "
-    f"the front-to-back distance is shortened relative to width. CI measurement: "
-    f"{ctx.get('brachycephaly_measurement','___')}. Normal CI is closer to 80. "
-    f"The occiput houses the cerebellum, which coordinates tone, balance, posture, attention, language, "
-    f"and emotional regulation. A flat occiput increases scoliosis risk due to compensatory cervical curve changes."
-),
+    f"non-synostotic brachycephaly. Non-synostotic means there is no sutural fusion or aplasia — in other words, the patient is not a candidate for cranial surgery. "
+    f"Brachycephaly means the back of the head is flat and the front-to-back distance is too short as compared to the cranial width. "
+    f"This is reflected in a Cephalic Index (CI) measurement of {ctx.get('brachycephaly_measurement','___')}. "
+    f"The CI measures the proportionality of the length and width of the head — the preferred normal CI is closer to 80. "
+    f"The back of the head houses the cerebellum, which coordinates primitive reflexes, muscle tone, balance and posture, as well as attention, language, and emotional regulation. "
+    f"A flat occiput also increases the chance of scoliosis due to a compensatory reverse cervical curve."
+    ),
 "plagiocephaly": lambda ctx: (
-    f"Plagiocephaly – {ctx['patient_name']} presents with {ctx.get('plagiocephaly_severity','___')} "
-    f"non-synostotic plagiocephaly, with a CVA of {ctx.get('plagiocephaly_measurement','___')}. "
-    f"Non-synostotic means no sutural fusion or aplasia—no surgical indication. "
-    f"Plagiocephaly means one side of the head is anterior relative to the other. "
-    f"Laterality: {ctx.get('plagiocephaly_laterality','___')}. "
-    f"When torticollis coexists, the neck preference reinforces the cranial asymmetry, creating a cycle."
+    f"Plagiocephaly – {ctx['patient_name']} measures for {ctx.get('plagiocephaly_severity','___')} "
+    f"non-synostotic plagiocephaly, with a Cranial Vault Asymmetry (CVA) measured at {ctx.get('plagiocephaly_measurement','___')} (0–1 is the desired measurement). "
+    f"Non-synostotic means there is no sutural fusion or aplasia — the patient is not a candidate for cranial surgery. "
+    f"Plagiocephaly means that one side of the head is not symmetrical with the other. "
+    f"The {ctx.get('plagiocephaly_laterality','___')} side of {ctx['pronoun_poss']} cranial vault and/or face is anterior, or forward, as compared to the other side."
+    + (
+        f" {ctx['patient_first_name']} also has a restriction of the vertebrae in {ctx['pronoun_poss']} upper neck (torticollis) causing a preference for which way "
+        f"{ctx['pronoun_poss']} head is comfortable. This preference can contribute to {ctx['pronoun_poss']} plagiocephaly, and the plagiocephaly sustains the misalignment in "
+        f"{ctx['pronoun_poss']} neck — it can be a vicious cycle."
+        if globals().get('torticollis') and globals()['torticollis'].get() else ""
+    )
     ),
 "dolichocephaly": lambda ctx: (
     f"Dolichocephaly – {ctx['patient_name']} presents with a {ctx.get('dolichocephaly_severity','___')} "
-    f"non-synostotic dolichocephalic presentation. CI: {ctx.get('dolichocephaly_measurement','___')}. "
-    f"Dolichocephaly means the head is longer and narrower than ideal. "
-    f"A narrow cranium causes a high palate (affecting nursing) and increases risk of dental crowding. "
-    f"A high palate is especially problematic with tongue ties, leading to incomplete milk extraction and low supply."
+    f"non-synostotic dolichocephalic presentation. Non-synostotic means this is malleable — not a result of sutural fusion or aplasia, and not a surgical candidate. "
+    f"{ctx['pronoun_poss_cap']} Cephalic Index (CI) measured at {ctx.get('dolichocephaly_measurement','___')}; ideal range is closer to 80. "
+    f"A narrow cranium causes (1) a high palate which can make nursing more challenging, and (2) teeth crowding and a proclivity toward orthodontics later in life. "
+    f"A high palate is especially problematic in the presence of a tongue tie, making extraction of milk at the breast incomplete, leading to low milk supply and an unsatisfied baby."
     ),
 "torticollis": lambda ctx: (
     f"Torticollis – A mild to moderate {ctx.get('torticollis_laterality','___')} lateral torticollis was noted. "
-    f"This is essentially a crick in the neck, causing a preference for turning to one side. "
-    f"It may be due to internal dural torsion, vertebral fixation, or muscular imbalance, and can make nursing on one breast "
-    f"more comfortable than the other. Home exercises such as gentle inversion swinging a couple of times daily help straighten "
-    f"the dural torsion and support treatment. A good lactation consultant can help identify comfortable nursing positions. "
-    f"Vagal nerve compression often accompanies torticollis and may contribute to digestive issues; this typically resolves as "
-    f"the torticollis improves."
+    f"This is a fancy term for a crick in the neck, causing the neck to prefer turning to one side. "
+    f"This can be due to an internal dural torsion, vertebral fixation/positioning, and/or muscular imbalance, and can sometimes cause nursing on one breast to be more comfortable than the other. "
+    f"Home exercises of inversion swinging a couple of times daily will assist treatment by straightening this dural torsion. "
+    f"A good lactation consultant will be able to help find comfortable positions for each breast. "
+    f"Vagal nerve compression often accompanies torticollis and can cause digestive issues as well — the vagal nerve will recover as the torticollis is resolved."
     ),
 "tethered_oral_tissues": lambda ctx: (
-    f"Tethered Oral Tissues (TOTs): {ctx['patient_first_name']}'s oral ties need to be evaluated for possible "
+    f"Tethered Oral Tissues (TOTs) – {ctx['patient_first_name']}'s oral ties need to be evaluated for possible "
     f"laser frenectomy by a pediatric dentist extensively trained in TOTs. "
-    f"{ctx['pronoun_poss_cap']} tongue looks and feels tight, and {ctx['pronoun_subj']} gags when the palate is touched, "
-    f"which can indicate a restricted tongue. Oral ties can cause nursing issues, breast pain, incomplete milk extraction, "
-    f"low weight gain, painful gas, diminishing milk supply, mastitis, and more. Speech, dentition, neck/throat tension, "
-    f"posture, gag reflex, and airway function can all be negatively affected by not releasing ties during infancy. "
-    f"TOTs can cause delayed response to cranial treatments. Infancy is the ideal time for release."
+    f"Oral ties can cause a variety of nursing issues and breast pain. "
+    f"TOTs can also cause incomplete extraction of milk, low weight gain, painful gas, diminishing milk supply, mastitis, and more. "
+    f"Speech, dentition, neck/throat tension, posture, gag reflex, and airway function can all be negatively affected by not releasing ties during infancy. "
+    f"TOTs can cause delayed response to cranial treatments. Infancy is by far the best time to have this done."
     ),
 "internal_maxilla_rotation": lambda ctx: (
-    f"Internal Maxilla Rotation – A high, narrow palate with a low intermaxillary suture was observed. "
-    f"This is commonly associated with internally rotated maxillae and intermaxillary sutural restriction, often related to "
-    f"tongue‑tie. The tongue’s pressure on the palate helps shape the maxilla; when the tongue cannot fully contact the palate, "
-    f"the palate becomes high and narrow. Internal maxilla rotation is frequently associated with dark circles under the eyes."
+    f"Internal Maxilla Rotation – A high, narrow palate with a low intermaxillary suture was observed and is commonly the result of internally rotated maxillae and intermaxillary sutural restriction. "
+    f"This is often seen as a result of a tongue tie. "
+    f"The tongue's pressure on the top of the mouth helps shape the palate — if the tongue is not fully contacting the upper palate, the mouth shape will be off. "
+    f"Incidentally, internal maxillae rotation often presents with dark circles under the eyes."
     ),
 "sutural_restrictions": lambda ctx: (
-    f"Sutural Restrictions – Cranial findings present with tight vault, oral, and facial sutures with ridging along several "
-    f"cranial vault sutures. This is common in C‑sections, babies trapped in transition, or those with very rapid transitions. "
-    f"Sutural restriction limits cranial expansion. It may affect only one region (causing asymmetry), the sinus or oral "
-    f"structures, or the entire cranial vault. Because brain growth drives cranial expansion, unrestricted sutures are essential. "
-    f"Asymmetries may not appear until the 12‑week growth spurt. These findings are not merely aesthetic — cranial shape affects "
-    f"brain development, TMJ function, airway development, and future orthodontic needs."
+    f"Sutural Restrictions – Cranial findings present with tight vault, oral, and facial sutures with ridging along several cranial vault sutures. "
+    f"This is a common finding in C-sections, babies trapped in transition, or those with a transition that was too fast. "
+    f"Sutural restriction limits cranial expansion. This restriction can involve just one area of the head causing asymmetry, limit the expansion of the sinus or oral structures, "
+    f"or result in limited expansion of the whole cranial vault. "
+    f"When considering it is brain growth that causes the cranium to expand, one can see the importance of having sutures that don't restrict cranial expansion. "
+    f"Sometimes these asymmetries don't show up until the 12-week growth spurt. "
+    f"Is this just aesthetics? No — the shape of the head can directly affect brain development, TMJ and airway function, and future orthodontic needs."
     ),
 "metopic_ridging": lambda ctx: (
-    f"Metopic Ridging – The metopic suture runs vertically down the center of the forehead and is the only cranial suture that "
-    f"normally fuses. Fusion typically occurs between 3–9 months of age. Cranial therapy before this window can improve ridging "
-    f"when the suture is jammed. After fusion, cranial therapy may still reduce the severity of ridging over growth spurts, "
-    f"though progress may take months to years."
+    f"Metopic Ridging – The metopic suture runs up and down the center of the forehead and is the only cranial suture that actually fuses. "
+    f"This typically happens between 3–9 months of age. "
+    f"Cranial therapy before this window can improve the ridging when the suture is jammed. "
+    f"Cranial therapy after this time window can sometimes reduce the severity of the ridging over growth spurts, but takes time — sometimes months, sometimes years."
     ),
 "potential_supernumerary_cranial_bones": lambda ctx: (
-    f"Potential Supernumerary Cranial Bones – Small accessory bones were noted along the lambdoid region. These are normal "
-    f"variants and typically of no functional or aesthetic consequence unless accompanied by flattening and sutural restriction. "
-    f"Cranial work can usually restore normal shape and positioning of the occiput and parietals, though the small accessory "
-    f"bones may remain slightly recessed. These variants rarely warrant imaging, as they are clinically insignificant."
+    f"Potential Supernumerary Cranial Bones – It is not uncommon to find normal variants in the cranial morphology, especially along the lambdoid suture. "
+    f"These look like little bonus bones, and are of no functional or aesthetic consequence unless there is a flattening of the lambdoid suture with sutural restrictions. "
+    f"We can usually get the sutures to release and the occiput and/or parietals to resume normal shape and positioning; however, it can be hard to get those little bonus bones to push back out. "
+    f"This is of no functional consequence, and only occasionally do the little flat bone islands remain noticeable. "
+    f"An x-ray can determine if these bones are present, but since it is of no real consequence, I have yet to opt for infant radiation solely for determining the presence or absence of such an inconsequential variant."
+    ),
+"skeletal_alignment": lambda ctx: (
+    f"Skeletal Alignment – Misalignments or joint restrictions were discovered in the cervical, thoracic, lumbar, and sacral regions which can have associated neurological interference. "
+    f"This can be due to external vertebral restrictions, muscle imbalance, or dural torsion. "
+    f"These will be easily resolved at {ctx['pronoun_poss']} visits, along with the inversion swinging exercises."
     ),
 "acetabular_click": lambda ctx: (
-    f"Acetabular Click – An acetabular click was noticed on the "
-    f"{ctx.get('acetabular_click_laterality','___')} hip. "
-    f"Acetabular clicks may indicate mild hip instability or shallow acetabular development. "
-    f"Evaluation by a pediatric orthopedist or imaging may be recommended depending on clinical presentation."
+    f"Acetabular Click – An acetabular click was noticed on the {ctx.get('acetabular_click_laterality','___')} hip. "
+    f"Acetabular x-rays are recommended."
     ),
 "femur_rotation": lambda ctx: (
     f"Femur Rotation – Decreased {ctx.get('femur_rotation_restriction','___')} rotation of the "
@@ -1860,23 +2176,26 @@ finding_templates = {
     f"Cranial and pelvic balancing often improve femoral rotation symmetry."
     ),
 "thrush": lambda ctx: (
-    f"Thrush – Thrush was visibly apparent on the tongue, which can cause painful nursing for both the infant and the mother, "
-    f"as well as bloating, reflux, and digestive discomfort. Homeopathic support such as Borax 30c twice daily is often helpful. "
-    f"A high‑quality probiotic (SFI Lacto Prime or SFI Baby Probiotic) is recommended twice daily. "
-    f"If breastfeeding, SFI Ther‑biotic Complete Probiotics may support maternal flora. "
-    f"Nipples may be sprayed with colloidal silver before and after nursing. "
-    f"If symptoms do not resolve within two weeks, a consultation with a homeopath is recommended."
+    f"Thrush – Thrush was visibly apparent on the tongue, which can cause painful nursing for the infant's mouth at the breast, bloating, reflux, and more. "
+    f"Thrush is a fungal infection that can be local or systemic. "
+    f"A high-quality probiotic (SFI Lacto Prime or SFI Baby Probiotic) is recommended twice daily. "
+    f"Anovite Colostrum is recommended for baby. "
+    f"If breastfeeding, SFI Ther-biotic Complete Probiotics and eliminating sugar/simple carbs may support maternal flora. "
+    f"Nipples may be sprayed with Argentyn 23 colloidal silver before and after nursing, and Silverette Nipple Shields are recommended. "
+    f"If symptoms do not resolve within two weeks, a consultation with Stephanie Kononovich (https://foundationhomeopathy.com) is recommended. "
+    f"This should be resolved before proceeding with any TOTs frenectomies."
     ),
 "cradle_cap": lambda ctx: (
-    f"Cradle Cap – Cradle cap was noted. This is a fungal condition often associated with a temporarily weakened immune system. "
-    f"Parents should avoid scrubbing the flakes, as this can worsen the condition. "
-    f"Homeopathic and probiotic support may be beneficial. If no improvement is seen within 3–4 weeks, "
-    f"a consultation with a homeopath is recommended for a more specific remedy."
+    f"Cradle Cap – Cradle cap was noted. This is a fungal condition in the presence of a weakened immune system. "
+    f"Please avoid scrubbing the flakes off, as this can cause the condition to spread. "
+    f"Argentyn 23 silver gel or spray can be applied to the area, followed with massaging coconut or olive oil into the scalp. "
+    f"If there is no improvement in 3–4 weeks, a consultation with Stephanie Kononovich (http://foundationhomeopathy.com) for a more specific homeopathic recommendation is advised."
     ),
 "blocked_tear_duct": lambda ctx: (
     f"Blocked Tear Duct – A blocked {ctx.get('blocked_tear_duct_laterality','___')} tear duct was noted. "
-    f"The homeopathic cell salt Silicea 6x is often recommended twice daily. "
-    f"Cranial and sutural release may also support improved drainage."
+    f"The homeopathic cell salt Silicea 6x is recommended 2–3x daily. "
+    f"Argentyn 23 silver (spray or drops) in the eye 2x daily is also recommended. "
+    f"Sutural release may help as well."
     ),
 "facial_asymmetry": lambda ctx: (
     f"Facial Asymmetry – Facial asymmetry was noted. This may reflect underlying sutural restriction, "
@@ -1888,37 +2207,47 @@ finding_templates = {
     ),
 "frontal_alignment": lambda ctx: (
     f"Frontal Alignment – An externally rotated frontal bone was noted. This may present as a high brow, wider eye spacing, "
-    f"anterior malar positioning, or chin deviation. Although sometimes considered aesthetic, frontal alignment affects TMJ function, "
-    f"vision, and maxillary rotation."
+    f"anterior malar positioning, or chin deviation. Although this may seem only aesthetic, it can affect TMJ function, vision, and maxillary rotation."
     ),
 "temporal_alignment": lambda ctx: (
-    f"Temporal Alignment – A {ctx.get('temporal_ear_flare_laterality','___')} ear flare was noted, typically due to external rotation "
-    f"of one or both temporal bones. Uncorrected temporal rotation can contribute to crossbite tendencies, recessed jaw posture, "
-    f"sensitive ears, and motion sickness."
+    f"Temporal Alignment – A {ctx.get('temporal_ear_flare_laterality','___')} ear flare was noticed. "
+    f"This is generally due to an external rotation of one or both temporal bones — the bone surrounding the ear. "
+    f"Uncorrected, this can contribute to a crossbite, recessed jaw, more sensitive ears, motion sickness, ear infections, vertigo or balance issues, and auditory processing difficulties."
     ),
 "retrognathia": lambda ctx: (
-    f"Retrognathia – A recessed chin was noted, often due to externally rotated temporal bones affecting the TMJ and ear canal. "
-    f"This can contribute to nursing discomfort and may predispose to orthodontic challenges later in life. "
-    f"Jaw exercises have been recommended."
+    f"Retrognathia – This is a fancy term for a recessed chin, which can later become an overbite. "
+    f"This tendency is noticeable by the large crease under the lower lip and the flared temporal bones (above the ears). "
+    f"This is often due to externally rotated temporal bones and can affect the position of the ear canal and the TM joint. "
+    f"A recessed jaw can cause nursing pain and can be an orthodontic challenge later in life. Jaw exercises have been recommended."
     ),
 "prognathia": lambda ctx: (
-    f"Prognathia – An underbite tendency was noted. This may result from internal rotation of the temporal bones, mouth breathing, "
-    f"or prolonged thumb‑sucking. Cranial balancing and oral‑motor support may help improve jaw alignment."
+    f"Prognathia – This is a fancy term for an underbite. "
+    f"This can be due to a variety of factors including, but not limited to, the internal rotation of the temporal bones causing the jaw to jut forward, mouth breathing, and prolonged thumb-sucking."
     ),
 "inappropriate_reflexes": lambda ctx: (
-    f"Inappropriately Exhibited Primitive Reflexes – Primitive reflexes were observed including: "
-    f"{ctx.get('primitive_reflex_findings','___')}. "
-    f"Disorganized reflexes can delay treatment results and contribute to daily challenges. "
-    f"These reflexes can be calmed and integrated with specific exercises. "
-    f"Early integration is important due to rapid cerebellar and synaptic development in infancy."
+    f"Inappropriately Exhibited Primitive Reflexes – Primitive reflexes were observed including: {ctx.get('primitive_reflex_findings','___')}. "
+    f"My treatment results can be delayed due to inappropriate Primitive Reflexes, not to mention the challenges in daily life. "
+    f"These reflexes can be easily organized and calmed with specific exercises. "
+    f"Babies can then enjoy their environments without fear and stress. "
+    f"Disorganized reflexes can cause asymmetrical tension in the body and disorganization in the brain. "
+    f"Peak synaptic development is at 8 months. The cerebellum increases in size by 240% during the first year of life. "
+    f"By 2 years the brain has reached 80–90% of its adult volume. "
+    f"It is crucial to get these reflexes integrated early. "
+    f"For these reasons, I am recommending co-treating with Stephanie Kononovich to organize and integrate these reflexes. "
+    f"She will give you easy activities to do at home to speed up our results."
     ),
 "retained_primitive_reflexes": lambda ctx: (
-    f"Retained Primitive Reflexes – Retained primitive reflexes were observed, notably "
-    f"{ctx.get('primitive_reflex_findings','___')}. "
-    f"These may persist after a birth the infant experienced as traumatic. "
-    f"Babies may cry or appear fearful when lying back for treatment. "
-    f"Retained reflexes can cause tension, stress, and delayed cranial results. "
-    f"Early integration is crucial due to rapid brain growth in the first two years of life."
+    f"Retained Primitive Reflexes – Retained primitive reflexes were observed, notably {ctx.get('primitive_reflex_findings','___')}. "
+    f"This can be retained due to a birth that the baby experienced as traumatic. "
+    f"These babies will cry for seemingly no reason while being required to lie back during treatments (which are painless). "
+    f"Sometimes they seem terrified, even just lying down on the table — this can cause so much stress and tension in these little ones. "
+    f"My cranial results can be delayed due to the baby not relaxing, not to mention the challenges of being fearful and stressed in daily life. "
+    f"These reflexes can be easily calmed with appropriate exercises, and babies can then enjoy their environments without fear and stress. "
+    f"Peak synaptic development is at 8 months. The cerebellum increases in size by 240% the first year of life. "
+    f"By 2 years the brain has reached 80–90% of its adult volume. "
+    f"It is crucial to get these reflexes integrated early. "
+    f"For these reasons, I am recommending co-treating with Stephanie Kononovich to organize and integrate these reflexes. "
+    f"Scheduling your appointment with her just prior to treatment with me is the best arrangement for a pleasant and successful outcome."
     ),
 }
 
@@ -1935,6 +2264,7 @@ finding_order = [
     "sutural_restrictions",
     "metopic_ridging",
     "potential_supernumerary_cranial_bones",
+    "skeletal_alignment",
     "acetabular_click",
     "femur_rotation",
     "thrush",
@@ -2132,7 +2462,7 @@ def build_patient_overview(ctx):
     formula_use = ctx.get("formula_use", "").strip()
     formula_brand = ctx.get("formula_brand", "").strip()
 
-    if formula_use == "Yes":
+    if formula_use == "Primary feeding method":
         if formula_brand:
             sentences.append(f"{first} is currently receiving {formula_brand} formula.")
         else:
@@ -2172,7 +2502,81 @@ def build_patient_overview(ctx):
 
     return " ".join(sentences)
 
-def add_image_grid(doc, image_paths, cols=3, img_width_in=2.0):
+def replace_placeholder_with_image_grid(doc, placeholder, image_paths, captions=None, cols=3, img_width_in=2.0):
+    """
+    Find a placeholder paragraph in the doc (body or table cells) and replace
+    it with an image grid table.  If no images are selected the placeholder
+    paragraph is simply removed.
+    """
+    paths = [p for p in image_paths if p and os.path.exists(p)]
+
+    def _build_and_insert(anchor_para):
+        """Build image grid table and splice it after anchor_para, then delete anchor_para."""
+        if not paths:
+            delete_paragraph(anchor_para)
+            return True
+
+        total_w = usable_width_inches(doc)
+        cell_w = total_w / cols
+        img_w = min(img_width_in, max(0.8, cell_w - 0.2))
+        n_rows = (len(paths) + cols - 1) // cols
+
+        table = doc.add_table(rows=n_rows, cols=cols)
+        table.autofit = False
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+        idx = 0
+        for r in range(n_rows):
+            for c in range(cols):
+                if idx >= len(paths):
+                    break
+                cell = table.rows[r].cells[c]
+                cell.width = Inches(cell_w)
+                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+                cp = cell.paragraphs[0]
+                cp.text = ""
+                cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                path = paths[idx]
+                compressed = compress_image_for_report(path)
+                cp.add_run().add_picture(compressed, width=Inches(img_w))
+                caption = (captions or {}).get(path, "")
+                if caption:
+                    cap_p = cell.add_paragraph(caption)
+                    cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    if cap_p.runs:
+                        cap_p.runs[0].italic = True
+                idx += 1
+
+            # Keep every row together — prevents image/caption split across pages
+            for row in table.rows:
+                prevent_row_split(row)
+
+        # Move the table XML to sit directly after the placeholder paragraph
+        anchor_para._p.addnext(table._tbl)
+        delete_paragraph(anchor_para)
+        return True
+
+    # Search top-level body paragraphs first
+    for p in doc.paragraphs:
+        if placeholder in p.text:
+            _build_and_insert(p)
+            return
+
+    # Fall back to searching inside table cells
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    if placeholder in p.text:
+                        _build_and_insert(p)
+                        return
+
+def add_image_grid(doc, image_paths, cols=3, img_width_in=2.0, captions=None):
+    """
+    Insert images into the document in a grid table.
+    captions: optional dict mapping image path → caption string shown below each image.
+    Patient image descriptions are looked up automatically from patient_image_descriptions.
+    """
     paths = [p for p in image_paths if p and os.path.exists(p)]
     if not paths:
         return
@@ -2180,7 +2584,6 @@ def add_image_grid(doc, image_paths, cols=3, img_width_in=2.0):
     rows = (len(paths) + cols - 1) // cols
     total_w = usable_width_inches(doc)
     cell_w = total_w / cols
-    # keep images slightly smaller than cell
     img_w = min(img_width_in, max(0.8, cell_w - 0.2))
 
     table = doc.add_table(rows=rows, cols=cols)
@@ -2201,26 +2604,37 @@ def add_image_grid(doc, image_paths, cols=3, img_width_in=2.0):
             cp.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
             path = paths[idx]
+            compressed = compress_image_for_report(path)
             run = cp.add_run()
-            run.add_picture(path, width=Inches(img_w))
+            run.add_picture(compressed, width=Inches(img_w))
 
-            key_match = next((k for k, v in patient_images.items() if v == path), None)
-            if key_match:
-                desc = patient_image_descriptions.get(key_match, "").strip()
-                if desc:
-                    desc_p = cell.add_paragraph(desc)
-                    desc_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            # Caption: check caller-supplied captions first, then patient descriptions
+            caption = (captions or {}).get(path, "")
+            if not caption:
+                key_match = next((k for k, v in patient_images.items() if v == path), None)
+                if key_match:
+                    caption = patient_image_descriptions.get(key_match, "").strip()
+
+            if caption:
+                cap_p = cell.add_paragraph(caption)
+                cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                cap_p.runs[0].italic = True
 
             idx += 1
+
+    # Keep every row together — prevents image/caption split across pages
+    for row in table.rows:
+        prevent_row_split(row)
 
     doc.add_paragraph("")
 
 # Main generate_report function
 def generate_report():
     try:
-        template_path = "report_template.docx"
+        template_path = os.path.join(BASE_DIR, "report_template.docx")
         if not os.path.exists(template_path):
-            messagebox.showerror("Template missing", f"Template not found: {template_path}")
+            root.after(0, lambda: messagebox.showerror(
+                "Template missing", f"Template not found: {template_path}"))
             return
 
         doc = Document(template_path)
@@ -2267,15 +2681,18 @@ def generate_report():
 
         if feeding_breast.get():
             feeding_methods.append("breastfeeding")
-        if feeding_formula.get():
+        fu = formula_use.get().strip()
+        if fu == "Primary feeding method":
             feeding_methods.append("formula")
+        elif fu == "Supplemental only":
+            feeding_methods.append("supplemental formula")
         if feeding_breast_bottle.get():
             feeding_methods.append("pumped breastmilk via bottle")
         if feeding_solid.get():
             feeding_methods.append("solid or pureed foods")
 
         ctx["feeding_breast"] = "breastfeeding" if feeding_breast.get() else ""
-        ctx["feeding_formula"] = "formula" if feeding_formula.get() else ""
+        ctx["feeding_formula"] = fu if fu != "None" else ""
         ctx["feeding_breast_bottle"] = "pumped breastmilk via bottle" if feeding_breast_bottle.get() else ""
         ctx["feeding_solid"] = "solid or pureed foods" if feeding_solid.get() else ""
         ctx["current_feeding"] = ", ".join(feeding_methods)
@@ -2355,10 +2772,10 @@ def generate_report():
         complications_phrase = ("complications including " + ctx.get('complications_text','').strip()) if ctx.get('complications','').lower().startswith('y') else "no complications"
         # formula
         formula_phrase = ""
-        fu = ctx.get('formula_use','').strip().lower()
-        if fu == "yes" or fu == "y":
+        fu = ctx.get('formula_use','').strip()
+        if fu == "Primary feeding method":
             formula_phrase = "is bottle-fed with " + (ctx.get('formula_brand','').strip() or "")
-        elif fu.startswith("supplement"):
+        elif fu == "Supplemental only":
             formula_phrase = "is supplementally bottle-fed with " + (ctx.get('formula_brand','').strip() or "")
         else:
             formula_phrase = ""
@@ -2410,8 +2827,27 @@ def generate_report():
             "{{ other_care_details }}": ctx.get("other_care_details", ""),
             "{{ previous_care }}": ctx.get("previous_care", ""),
             "{{ pushing }}": ctx.get("pushing", ""),
-            "{{ solids }}": ctx.get("solids", ""),  
-            "{{ patient_overview }}": ctx.get("patient_overview", ""),      
+            "{{ solids }}": ctx.get("solids", ""),
+            "{{ patient_overview }}": ctx.get("patient_overview", ""),
+            "{{ obstacles_to_improvement }}": (
+                'There are 3 "obstacles to improvement" in this process:\n'
+                '1. Unreleased TOTs. Please contact one of the recommended pediatric dentists as soon as possible.\n'
+                '2. Baby spending time or sleeping on their back, or spending time in restraining devices that push on the back of the head. '
+                'Teach your baby to tummy sleep and keep them off the back of their head as much as possible.\n'
+                '3. Retained Primitive Reflexes - tummy sleeping will help. '
+                'Stephanie Kononovich can teach you how to integrate these important reflexes. '
+                'https://foundationhomeopathy.com/'
+            ),
+            "{{ closing_paragraph }}": (
+                f"It's always a pleasure to work with wonderful families like the {ctx.get('patient_last_name','')}s. "
+                f"I am so glad they are under your excellent care, as well! "
+                f"Please feel free to reach out anytime for discussion or questions. "
+                f"I look forward to keeping you updated as we go along.\n\n"
+                f"If you are unfamiliar with my approach, I use a specialized cranial technique designed specifically by me for young patients, "
+                f"distinct from CranioSacral Therapy (CST). If you'd like to learn more about what I do, you can find additional details on my website, "
+                f"DrKeilaDC.com, or check out a lecture I gave on plagiocephaly here https://youtu.be/dgGSUs931mU?si=6smUdXucyRxfldqV on YouTube. "
+                f"I would be happy to set up a time to meet for lunch or give an educational lecture to your staff, if there is interest."
+            ),
         }
         # Merge simple_map and overview_map into replacements
         replacements = {**simple_map}
@@ -2479,6 +2915,7 @@ def generate_report():
                 "sutural_restrictions": 'sutural_restriction',  # if you have a toggle for this, else include based on other cues
                 "metopic_ridging": 'metopic_ridge',
                 "potential_supernumerary_cranial_bones": 'supernumerary_bones',
+                "skeletal_alignment": 'skeletal_alignment',
                 "acetabular_click": 'acetabular_click',
                 "femur_rotation": 'femur_rotation',
                 "thrush": 'thrush',
@@ -2531,28 +2968,11 @@ def generate_report():
             max_cols=6
         )
 
-        # after all replacements and before doc.save(...)
-        full_text = "\n".join([p.text for p in doc.paragraphs])
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    full_text += "\n" + "\n".join([p.text for p in cell.paragraphs])
-
-        leftover = sorted(set(re.findall(r"\{\{\s*([^}]+?)\s*\}\}", full_text)))
-        if leftover:
-            msg = "Unfilled placeholders detected:\n\n" + "\n".join(leftover)
-            messagebox.showwarning("Unfilled placeholders", msg)
-
         # ---------------------------------------------------------
-        # IMAGE APPENDIX (COMPACT GRID)
+        # REFERENCE IMAGES — inserted at {{ reference_images }}
+        # in the template (between Objective Findings and Recommendations)
+        # Must run BEFORE the leftover placeholder check.
         # ---------------------------------------------------------
-
-        doc.add_page_break()
-        doc.add_heading("Image Appendix", level=1)
-
-        # -------------------------
-        # Reference images (checkbox-driven)
-        # -------------------------
         reference_paths = []
 
         if img_right_plagio.get(): reference_paths.append(IMAGE_MAP["right_plagio"])
@@ -2563,17 +2983,31 @@ def generate_report():
         if img_parietal_bone.get(): reference_paths.append(IMAGE_MAP["parietal_bone"])
         if img_sagittal_suture.get(): reference_paths.append(IMAGE_MAP["sagittal_suture"])
         if img_normal_lip_frenulum.get(): reference_paths.append(IMAGE_MAP["normal_lip_frenulum"])
-        if img_normal_tongue_frenulum.get(): reference_paths.append(IMAGE_MAP["normal_tongue_frenulum"])
         if img_normal_tongue_frenulum_1.get(): reference_paths.append(IMAGE_MAP["normal_tongue_frenulum_1"])
         if img_normal_tongue_frenulum_2.get(): reference_paths.append(IMAGE_MAP["normal_tongue_frenulum_2"])
+        if img_eop.get(): reference_paths.append(IMAGE_MAP["eop"])
 
-        doc.add_heading("Reference Images", level=2)
-        add_image_grid(doc, reference_paths, cols=3, img_width_in=2.0)
+        # Build path → caption mapping for reference images
+        ref_captions = {IMAGE_MAP[key]: IMAGE_TITLES[key] for key in IMAGE_TITLES if key in IMAGE_MAP}
 
+        # Replace the {{ reference_images }} placeholder with the image grid
+        replace_placeholder_with_image_grid(doc, "{{ reference_images }}", reference_paths, ref_captions, cols=4, img_width_in=1.0)
 
-    # -------------------------
-        # Additional patient images (everything EXCEPT the 5 main photos)
-        # -------------------------
+        # Check for any remaining unfilled placeholders (thread-safe warning)
+        full_text = "\n".join([p.text for p in doc.paragraphs])
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    full_text += "\n" + "\n".join([p.text for p in cell.paragraphs])
+
+        leftover = sorted(set(re.findall(r"\{\{\s*([^}]+?)\s*\}\}", full_text)))
+        if leftover:
+            msg = "Unfilled placeholders detected:\n\n" + "\n".join(leftover)
+            root.after(0, lambda m=msg: messagebox.showwarning("Unfilled placeholders", m))
+
+        # ---------------------------------------------------------
+        # ADDITIONAL PATIENT IMAGES APPENDIX
+        # ---------------------------------------------------------
         exclude_keys = {"anterior_view", "superior_view", "left_profile", "right_profile", "lip_frenulum", "tongue_frenulum"}
 
         other_patient_paths = [
@@ -2582,23 +3016,48 @@ def generate_report():
         ]
 
         if other_patient_paths:
-            doc.add_heading("Additional Patient Images", level=2)
+            doc.add_page_break()
+            doc.add_heading("Additional Patient Images", level=1)
             add_image_grid(doc, other_patient_paths, cols=3, img_width_in=2.0)
 
 
         # Save file
         safe_last = ctx['patient_last_name'] or "Patient"
         date_str = datetime.date.today().strftime("%Y%m%d")
-        out_name = f"{safe_last}_{date_str}_Report.docx"
+        out_name = os.path.join(BASE_DIR, f"{safe_last}_{date_str}_Report.docx")
         doc.save(out_name)
 
-        messagebox.showinfo("Report saved", f"Report saved as {out_name}")
+        root.after(0, lambda: messagebox.showinfo(
+            "Report saved", f"Report saved as:\n{out_name}"))
 
     except Exception as e:
-        messagebox.showerror("Error generating report", str(e))
+        err = str(e)
+        root.after(0, lambda: messagebox.showerror(
+            "Error generating report", err))
 
-# Add Generate Report button to Recommendations tab
-generate_btn = tk.Button(tab_practitioner, text="Generate Report", command=generate_report, bg="#4CAF50", fg="white")
+# Add Generate Report button and status label to Practitioner Notes tab
+generate_status = tk.StringVar(value="")
+tk.Label(tab_practitioner, textvariable=generate_status, font=("Arial", 10), fg="#888").pack(anchor="e", padx=20)
+
+def start_generate_report():
+    """Disable the button, show status, then run generation in a background thread."""
+    generate_btn.config(state="disabled", text="Generating…")
+    generate_status.set("Please wait — building your report…")
+
+    def _run():
+        try:
+            generate_report()
+        finally:
+            # Always re-enable the button on the main thread when done
+            root.after(0, _generation_done)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+def _generation_done():
+    generate_btn.config(state="normal", text="Generate Report")
+    generate_status.set("")
+
+generate_btn = tk.Button(tab_practitioner, text="Generate Report", command=start_generate_report, bg="#4CAF50", fg="white")
 generate_btn.pack(anchor="e", padx=20, pady=20)
 
 
